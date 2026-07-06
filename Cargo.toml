@@ -1,0 +1,22 @@
+[package]
+name = "btpair"
+version = "0.1.0"
+edition = "2021"
+description = "Controller-navigable Bluetooth pair/connect/disconnect popup for Steam Big Picture on Pop!_OS"
+
+[dependencies]
+# BlueZ over D-Bus. `bluetoothd` feature pulls in Adapter/Device/Agent APIs.
+bluer = { version = "0.17", features = ["bluetoothd"] }
+
+# Async runtime for the Bluetooth thread.
+# "net" pulls in tokio's IO driver, which bluer's D-Bus connection needs
+# (Runtime::enable_all wires up both IO and time).
+tokio = { version = "1", features = ["rt", "sync", "time", "macros", "net"] }
+futures = "0.3"
+
+# Windowing, input (Xbox pad via GameController API) and 2D rendering + text.
+sdl2 = { version = "0.37", features = ["ttf"] }
+
+[profile.release]
+opt-level = 2
+lto = true
