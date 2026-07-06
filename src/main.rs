@@ -11,7 +11,7 @@ mod model;
 
 use model::{Command, Shared, Snapshot};
 
-use sdl2::controller::Button;
+use sdl2::controller::{Axis, Button};
 use sdl2::event::Event;
 use sdl2::keyboard::Keycode;
 use sdl2::pixels::Color;
@@ -28,6 +28,11 @@ const SELECT: Color = Color::RGB(52, 88, 140);
 const TEXT: Color = Color::RGB(235, 235, 240);
 const DIM: Color = Color::RGB(150, 150, 160);
 const GREEN: Color = Color::RGB(120, 210, 130);
+
+// Left-stick navigation tuning (axis range is -32768..32767; ~60fps loop).
+const STICK_DEADZONE: i16 = 16000;
+const STICK_REPEAT_DELAY: i32 = 18;
+const STICK_REPEAT_RATE: i32 = 6;
 
 fn main() {
     // --- shared state + command channel between UI and BT threads ---
@@ -76,6 +81,8 @@ fn main() {
     }
 
     let mut selected: usize = 0;
+    let mut stick_neutral = true;
+    let mut stick_cooldown: i32 = 0;
 
     'running: loop {
         // --- input ---
@@ -112,6 +119,34 @@ fn main() {
 
                 _ => {}
             }
+        }
+
+        // Left-stick vertical navigation, mirroring the D-pad with auto-repeat.
+        if stick_cooldown > 0 {
+            stick_cooldown -= 1;
+        }
+        let ly = controllers
+            .iter()
+            .map(|c| c.axis(Axis::LeftY))
+            .max_by_key(|v| v.unsigned_abs())
+            .unwrap_or(0);
+        if ly.saturating_abs() > STICK_DEADZONE {
+            if stick_cooldown == 0 {
+                if ly > 0 {
+                    selected += 1;
+                } else {
+                    selected = selected.saturating_sub(1);
+                }
+                stick_cooldown = if stick_neutral {
+                    STICK_REPEAT_DELAY
+                } else {
+                    STICK_REPEAT_RATE
+                };
+                stick_neutral = false;
+            }
+        } else {
+            stick_neutral = true;
+            stick_cooldown = 0;
         }
 
         // --- render ---
