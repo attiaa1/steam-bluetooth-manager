@@ -29,8 +29,6 @@ const TEXT: Color = Color::RGB(235, 235, 240);
 const DIM: Color = Color::RGB(150, 150, 160);
 const GREEN: Color = Color::RGB(120, 210, 130);
 const LEGEND_BG: Color = Color::RGB(24, 24, 30);
-const EXIT_BG: Color = Color::RGB(150, 54, 54);
-const EXIT_TEXT: Color = Color::RGB(255, 235, 235);
 
 // Left-stick navigation tuning (axis range is -32768..32767; ~60fps loop).
 const STICK_DEADZONE: i16 = 16000;
@@ -54,7 +52,7 @@ fn main() {
     let controllers_sub = sdl.game_controller().expect("game controller subsystem");
 
     let window = video
-        .window("Bluetooth", 1280, 720)
+        .window("Steam Bluetooth Manager", 1280, 720)
         .position_centered()
         .fullscreen_desktop()
         .build()
@@ -94,9 +92,9 @@ fn main() {
     let mut selected: usize = 0;
     let mut stick_neutral = true;
     let mut stick_cooldown: i32 = 0;
-    // On-screen Exit button, recomputed each frame; mouse clicks are tested
-    // against last frame's rect (fine at 60fps since it never moves).
-    let mut exit_btn = Rect::new(0, 0, 0, 0);
+    // Index of the first device row drawn; the visible window scrolls to follow
+    // the selection so devices below the fold stay reachable.
+    let mut scroll: usize = 0;
 
     'running: loop {
         // --- input ---
@@ -130,12 +128,6 @@ fn main() {
                     Keycode::Escape => break 'running,
                     _ => {}
                 },
-
-                Event::MouseButtonDown { x, y, .. } => {
-                    if exit_btn.contains_point((x, y)) {
-                        break 'running;
-                    }
-                }
 
                 _ => {}
             }
@@ -205,7 +197,7 @@ fn main() {
         );
 
         // --- header: title + adapter/scan state ---
-        draw_text(&mut canvas, &texture_creator, &font_title, "Bluetooth", margin, px(28.0), TEXT);
+        draw_text(&mut canvas, &texture_creator, &font_title, "Steam Bluetooth Manager", margin, px(28.0), TEXT);
         let header = if snap.powered {
             format!("scanning{}", if snap.scanning { "…" } else { "" })
         } else {
@@ -213,32 +205,25 @@ fn main() {
         };
         draw_text(&mut canvas, &texture_creator, &font_small, &header, margin, px(92.0), DIM);
 
-        // --- Exit button, top-right (mouse-clickable; B/Esc also exit) ---
-        let (ew, eh) = font.size_of("Exit").unwrap_or((0, 0));
-        let btn_w = ew as i32 + px(48.0);
-        let btn_h = eh as i32 + px(20.0);
-        exit_btn = Rect::new(w - margin - btn_w, px(28.0), btn_w as u32, btn_h as u32);
-        canvas.set_draw_color(EXIT_BG);
-        let _ = canvas.fill_rect(exit_btn);
-        draw_text(
-            &mut canvas,
-            &texture_creator,
-            &font,
-            "Exit",
-            exit_btn.x() + px(24.0),
-            exit_btn.y() + px(10.0),
-            EXIT_TEXT,
-        );
-
-        // --- Device rows ---
+        // --- Device rows (scrolling window that follows the selection) ---
         let row_h = px(76.0);
         let list_top = px(128.0);
-        for (i, d) in snap.devices.iter().enumerate() {
-            let y = list_top + i as i32 * row_h;
-            // Don't draw rows that would collide with the legend bar.
-            if y + row_h > legend_top {
-                break;
-            }
+        let visible_rows = ((legend_top - list_top) / row_h).max(1) as usize;
+
+        // Keep the selected row inside the visible window.
+        if selected < scroll {
+            scroll = selected;
+        } else if selected >= scroll + visible_rows {
+            scroll = selected + 1 - visible_rows;
+        }
+        // Clamp so we never scroll past the end (e.g. after devices disappear).
+        let max_scroll = snap.devices.len().saturating_sub(visible_rows);
+        scroll = scroll.min(max_scroll);
+
+        let last = (scroll + visible_rows).min(snap.devices.len());
+        for (row, i) in (scroll..last).enumerate() {
+            let d = &snap.devices[i];
+            let y = list_top + row as i32 * row_h;
 
             let selected_row = i == selected;
             if selected_row {
@@ -287,6 +272,14 @@ fn main() {
                     TEXT,
                 );
             }
+        }
+
+        // When the list overflows, show which slice is on screen (top-right),
+        // so it's clear there are more devices to scroll to.
+        if snap.devices.len() > visible_rows {
+            let count = format!("{}–{} of {}", scroll + 1, last, snap.devices.len());
+            let (cw, _) = font_small.size_of(&count).unwrap_or((0, 0));
+            draw_text(&mut canvas, &texture_creator, &font_small, &count, w - margin - cw as i32, px(36.0), DIM);
         }
 
         if snap.devices.is_empty() {
