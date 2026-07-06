@@ -28,6 +28,9 @@ const SELECT: Color = Color::RGB(52, 88, 140);
 const TEXT: Color = Color::RGB(235, 235, 240);
 const DIM: Color = Color::RGB(150, 150, 160);
 const GREEN: Color = Color::RGB(120, 210, 130);
+const LEGEND_BG: Color = Color::RGB(24, 24, 30);
+const EXIT_BG: Color = Color::RGB(150, 54, 54);
+const EXIT_TEXT: Color = Color::RGB(255, 235, 235);
 
 // Left-stick navigation tuning (axis range is -32768..32767; ~60fps loop).
 const STICK_DEADZONE: i16 = 16000;
@@ -64,9 +67,17 @@ fn main() {
         .expect("create canvas");
     let texture_creator = canvas.texture_creator();
 
+    // Scale the whole UI to the actual screen so it's legible on a TV from the
+    // couch. Baseline design is 720p; everything grows proportionally on 1080p/4K.
+    let (_screen_w, screen_h) = canvas.output_size().unwrap_or((1280, 720));
+    let scale = (screen_h as f32 / 720.0).max(1.0);
+    let fsize = |base: f32| ((base * scale) as u16).max(1);
+
     let font_path = find_font();
-    let font = ttf.load_font(&font_path, 26).expect("load font");
-    let font_small = ttf.load_font(&font_path, 20).expect("load small font");
+    let font_title = ttf.load_font(&font_path, fsize(52.0)).expect("load title font");
+    let font = ttf.load_font(&font_path, fsize(30.0)).expect("load font");
+    let font_small = ttf.load_font(&font_path, fsize(22.0)).expect("load small font");
+    let font_legend = ttf.load_font(&font_path, fsize(32.0)).expect("load legend font");
 
     let mut event_pump = sdl.event_pump().expect("event pump");
 
@@ -83,6 +94,9 @@ fn main() {
     let mut selected: usize = 0;
     let mut stick_neutral = true;
     let mut stick_cooldown: i32 = 0;
+    // On-screen Exit button, recomputed each frame; mouse clicks are tested
+    // against last frame's rect (fine at 60fps since it never moves).
+    let mut exit_btn = Rect::new(0, 0, 0, 0);
 
     'running: loop {
         // --- input ---
@@ -116,6 +130,12 @@ fn main() {
                     Keycode::Escape => break 'running,
                     _ => {}
                 },
+
+                Event::MouseButtonDown { x, y, .. } => {
+                    if exit_btn.contains_point((x, y)) {
+                        break 'running;
+                    }
+                }
 
                 _ => {}
             }
@@ -160,36 +180,84 @@ fn main() {
         canvas.set_draw_color(BG);
         canvas.clear();
 
-        let (w, _h) = canvas.output_size().unwrap_or((1280, 720));
-        draw_text(&mut canvas, &texture_creator, &font, "Bluetooth", 48, 36, TEXT);
+        let (w, h) = canvas.output_size().unwrap_or((1280, 720));
+        let (w, h) = (w as i32, h as i32);
+        // Scale layout metrics to the screen, mirroring the font scaling above.
+        let px = |v: f32| (v * scale) as i32;
+        let margin = px(48.0);
+
+        // --- bottom legend bar (drawn first so we know how much vertical space
+        // the device list may occupy) ---
+        let legend_h = px(72.0);
+        let legend_top = h - legend_h;
+        canvas.set_draw_color(LEGEND_BG);
+        let _ = canvas.fill_rect(Rect::new(0, legend_top, w as u32, legend_h as u32));
+        let legend = "[A] Connect / Pair     [Y] Disconnect     [Back] Remove     [B] Exit";
+        let (lw, lh) = font_legend.size_of(legend).unwrap_or((0, 0));
+        draw_text(
+            &mut canvas,
+            &texture_creator,
+            &font_legend,
+            legend,
+            (w - lw as i32) / 2,
+            legend_top + (legend_h - lh as i32) / 2,
+            TEXT,
+        );
+
+        // --- header: title + adapter/scan state ---
+        draw_text(&mut canvas, &texture_creator, &font_title, "Bluetooth", margin, px(28.0), TEXT);
         let header = if snap.powered {
             format!("scanning{}", if snap.scanning { "…" } else { "" })
         } else {
             "adapter OFF".to_string()
         };
-        draw_text(&mut canvas, &texture_creator, &font_small, &header, 48, 74, DIM);
+        draw_text(&mut canvas, &texture_creator, &font_small, &header, margin, px(92.0), DIM);
 
-        // Device rows.
-        let row_h = 64i32;
-        let list_top = 120i32;
+        // --- Exit button, top-right (mouse-clickable; B/Esc also exit) ---
+        let (ew, eh) = font.size_of("Exit").unwrap_or((0, 0));
+        let btn_w = ew as i32 + px(48.0);
+        let btn_h = eh as i32 + px(20.0);
+        exit_btn = Rect::new(w - margin - btn_w, px(28.0), btn_w as u32, btn_h as u32);
+        canvas.set_draw_color(EXIT_BG);
+        let _ = canvas.fill_rect(exit_btn);
+        draw_text(
+            &mut canvas,
+            &texture_creator,
+            &font,
+            "Exit",
+            exit_btn.x() + px(24.0),
+            exit_btn.y() + px(10.0),
+            EXIT_TEXT,
+        );
+
+        // --- Device rows ---
+        let row_h = px(76.0);
+        let list_top = px(128.0);
         for (i, d) in snap.devices.iter().enumerate() {
             let y = list_top + i as i32 * row_h;
+            // Don't draw rows that would collide with the legend bar.
+            if y + row_h > legend_top {
+                break;
+            }
 
-            if i == selected {
+            let selected_row = i == selected;
+            if selected_row {
                 canvas.set_draw_color(SELECT);
             } else {
                 canvas.set_draw_color(PANEL);
             }
-            let _ = canvas.fill_rect(Rect::new(40, y, w - 80, (row_h - 8) as u32));
+            let _ = canvas.fill_rect(Rect::new(margin, y, (w - margin * 2) as u32, (row_h - px(8.0)) as u32));
 
             let name_color = if d.connected { GREEN } else { TEXT };
-            draw_text(&mut canvas, &texture_creator, &font, &d.name, 60, y + 6, name_color);
+            draw_text(&mut canvas, &texture_creator, &font, &d.name, margin + px(20.0), y + px(8.0), name_color);
 
             let mut tags = Vec::new();
             if d.connected {
                 tags.push("connected".to_string());
             } else if d.paired {
                 tags.push("paired".to_string());
+            } else {
+                tags.push("not paired".to_string());
             }
             tags.push(d.kind().to_string());
             if let Some(r) = d.rssi {
@@ -200,46 +268,38 @@ fn main() {
                 &texture_creator,
                 &font_small,
                 &tags.join("  •  "),
-                60,
-                y + 36,
+                margin + px(20.0),
+                y + px(42.0),
                 DIM,
             );
+
+            // Live action status shown inline on the selected row (right-aligned),
+            // instead of at the bottom of the screen.
+            if selected_row && !snap.status.is_empty() {
+                let (sw, sh) = font_small.size_of(&snap.status).unwrap_or((0, 0));
+                draw_text(
+                    &mut canvas,
+                    &texture_creator,
+                    &font_small,
+                    &snap.status,
+                    w - margin - px(20.0) - sw as i32,
+                    y + (row_h - px(8.0) - sh as i32) / 2,
+                    TEXT,
+                );
+            }
         }
 
         if snap.devices.is_empty() {
             draw_text(
                 &mut canvas,
                 &texture_creator,
-                &font_small,
+                &font,
                 "No devices yet — put your device in pairing mode…",
-                60,
-                list_top + 8,
+                margin + px(20.0),
+                list_top + px(8.0),
                 DIM,
             );
         }
-
-        // Status line + control hints at the bottom.
-        let (_w, h) = canvas.output_size().unwrap_or((1280, 720));
-        if !snap.status.is_empty() {
-            draw_text(
-                &mut canvas,
-                &texture_creator,
-                &font_small,
-                &snap.status,
-                48,
-                h as i32 - 76,
-                DIM,
-            );
-        }
-        draw_text(
-            &mut canvas,
-            &texture_creator,
-            &font_small,
-            "A connect/pair   Y disconnect   Back remove   B exit",
-            48,
-            h as i32 - 44,
-            TEXT,
-        );
 
         canvas.present();
     }
